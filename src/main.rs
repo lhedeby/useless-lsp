@@ -1,34 +1,52 @@
 use std::io::{BufRead, Write};
 
 use encoding::rpc::BaseMessage;
-use serde::Serialize;
+use lsp::{notification::traits::Notification, request::traits::Request};
+use serde::{de::DeserializeOwned, Serialize};
+use state::State;
 
 use crate::{
     encoding::rpc,
-    lsp::initialize::{get_init_response, InitializeRequest},
+    lsp::{
+        notification::document_didopen::{DidOpenTextDocumentNotification, PublishDiagnosticsParams}, request::{
+            hover::{HoverRequest, HoverResult},
+            initialize::{InitializeRequest, InitializeResult},
+        }
+    },
 };
 
 pub mod encoding;
 pub mod logger;
 pub mod lsp;
+pub mod state;
 
 fn main() -> anyhow::Result<()> {
     log!("Lsp started...");
 
     let mut stdin = std::io::stdin().lock();
+    let mut state = State::new();
 
     loop {
         let buffer = stdin.fill_buf()?;
 
         if let Ok(content) = rpc::decode_message(buffer) {
-            if content.method == "shutdown" {
-                break;
+            log!("Handling method '{}'", content.method);
+            match content.method.as_str() {
+                "shutdown" => {
+                    break;
+                }
+                "initialize" => {
+                    handle_request::<InitializeRequest, InitializeResult>(content, &mut state)?
+                }
+                "textDocument/didOpen" => {
+                    handle_notification::<DidOpenTextDocumentNotification, PublishDiagnosticsParams>(content, &mut state, "textDocument/publishDiagnostics")?
+                }
+                "textDocument/hover" => {
+                    handle_request::<HoverRequest, HoverResult>(content, &mut state)?
+                }
+                _ => log!("Method '{}' not implemented", content.method),
             }
-            match handle(content) {
-                Ok(_) => log!("successfully handled message"),
-                Err(e) => log!("error handling message: {:#?}", e),
-            }
-
+            log!("Handling done");
             let length = buffer.len();
             stdin.consume(length);
         }
@@ -37,35 +55,34 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle(message: BaseMessage) -> anyhow::Result<()> {
-    log!("Got message - method: {}", message.method);
-    log!("Got message - id: {:?}", message.id);
+fn handle_request<R, T>(message: BaseMessage, state: &mut State) -> anyhow::Result<()>
+where
+    R: DeserializeOwned + Request<T>,
+    T: Serialize,
+{
+    let req: R = serde_json::from_value(message.params.unwrap())?;
+    let result = req.handle(state)?;
 
-    match message.method.as_str() {
-        "initialize" => {
-            let req: InitializeRequest = serde_json::from_value(message.params.unwrap())?;
-            log!("{:#?}", req);
-            let response = get_init_response();
-            let response = Response {
-                id: message.id.unwrap(),
-                jsonrpc: "2.0".to_string(),
-                result: response,
-            };
-            let encoded_message = encoding::rpc::encode_message(response)?;
-            let mut stdout = std::io::stdout().lock();
-            stdout.write_all(encoded_message.as_bytes())?;
-            stdout.flush()?;
-            log!("Wrote to stdout response: {}", encoded_message);
-        }
-        _ => log!("Found implementation for method '{}'", message.method),
-    }
-    
+    let mut stdout = std::io::stdout().lock();
+    let encoded_message = encoding::rpc::encode_message(result, message.id)?;
+    log!("RESPONSE SENT: {}", encoded_message);
+    stdout.write_all(encoded_message.as_bytes())?;
+    stdout.flush()?;
     Ok(())
 }
 
-#[derive(Serialize)]
-struct Response<T> {
-    id: usize,
-    jsonrpc: String,
-    result: T,
+fn handle_notification<N, T>(message: BaseMessage, state: &mut State, method: &str) -> anyhow::Result<()>
+where
+    N: DeserializeOwned + Notification<T>,
+    T: Serialize,
+{
+    let notification: N = serde_json::from_value(message.params.unwrap())?;
+    if let Some(result) = notification.handle(state)? {
+        let mut stdout = std::io::stdout().lock();
+        let encoded_message = encoding::rpc::encode_notification(result, method.to_string())?;
+        log!("NOTIFICATION SENT: {}", encoded_message);
+        stdout.write_all(encoded_message.as_bytes())?;
+        stdout.flush()?;
+    }
+    Ok(())
 }

@@ -1,9 +1,27 @@
+use crate::{lsp::request::traits::Request, state::State};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct InitializeRequest {
     #[serde(rename = "clientInfo")]
     client_info: Option<ClientInfo>,
+}
+
+impl Request<InitializeResult> for InitializeRequest {
+    fn handle(&self, _: &mut State) -> anyhow::Result<InitializeResult> {
+        Ok(InitializeResult {
+            server_info: Some(ServerInfo {
+                name: "uselesslsp".to_string(),
+                version: Some("0.0.1".to_string()),
+            }),
+            capabilities: ServerCapabilities {
+                hover_provider: true,
+                definition_provider: true,
+                text_document_sync: 1,
+                code_action_provider: true,
+            },
+        })
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -13,7 +31,7 @@ struct ClientInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct InitializeResponse {
+pub struct InitializeResult {
     capabilities: ServerCapabilities,
     #[serde(rename = "serverInfo")]
     server_info: Option<ServerInfo>,
@@ -37,8 +55,8 @@ struct ServerInfo {
     version: Option<String>,
 }
 
-pub fn get_init_response() -> InitializeResponse {
-    InitializeResponse {
+pub fn get_init_result() -> InitializeResult {
+    InitializeResult {
         server_info: Some(ServerInfo {
             name: "uselesslsp".to_string(),
             version: Some("0.0.1".to_string()),
